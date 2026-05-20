@@ -224,12 +224,14 @@ def generate_reconstruction_prompt(
             "device": device_arg,
             "dtype": dtype,
             "trust_remote_code": True,
+            "model_kwargs": {"low_cpu_mem_usage": False},
         },
         {
             "task": "image-text-to-text",
             "model": model_id,
             "device": device_arg,
             "trust_remote_code": True,
+            "model_kwargs": {"low_cpu_mem_usage": False},
         },
         {
             "task": "image-to-text",
@@ -237,12 +239,14 @@ def generate_reconstruction_prompt(
             "device": device_arg,
             "dtype": dtype,
             "trust_remote_code": True,
+            "model_kwargs": {"low_cpu_mem_usage": False},
         },
         {
             "task": "image-to-text",
             "model": model_id,
             "device": device_arg,
             "trust_remote_code": True,
+            "model_kwargs": {"low_cpu_mem_usage": False},
         },
     ]
 

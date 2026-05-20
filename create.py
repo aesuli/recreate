@@ -197,7 +197,7 @@ def is_nearly_black_image(image: Any) -> bool:
 
 
 def load_diffusion_pipeline(pipeline_cls: Any, model_id: str, dtype: Any) -> Any:
-    kwargs: dict[str, Any] = {"torch_dtype": dtype, "use_safetensors": True}
+    kwargs: dict[str, Any] = {"torch_dtype": dtype, "use_safetensors": True, "low_cpu_mem_usage": False}
     if dtype is torch.float16:
         kwargs["variant"] = "fp16"
 
