@@ -12,6 +12,16 @@ DEFAULT_VISION_MODEL = "openbmb/MiniCPM-V-4.6"
 DEFAULT_MAX_SIZE = 512
 DEFAULT_MAX_NEW_TOKENS = 256
 DIMENSION_MULTIPLE = 8
+SUPPORTED_IMAGE_SUFFIXES = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".bmp",
+    ".gif",
+    ".webp",
+    ".tif",
+    ".tiff",
+}
 
 VISION_MODEL_PRESETS: tuple[tuple[str, str, int, int], ...] = (
     ("openbmb/MiniCPM-V-4.6", "default image-text-to-text model", 512, 256),
@@ -23,8 +33,8 @@ VISION_MODEL_OPTION_NUMBERS = tuple(range(1, len(VISION_MODEL_PRESETS) + 1))
 
 PROMPT_REQUEST = """
 Write a prompt describing the image to enable an image generation model to replicate it.
-Include any element that is relevant to exactly replicate the image not only in its content but also in its visual appearance.
-Relevant elements are the subject, setting, composition, camera angle, lighting, colors, materials, textures, background, image style, mood, any legible text, number, or symbol.
+Include any element that is relevant to exactly replicate the image not only in its content but also in its visual appearance, e.g., the nature of the image (a photo made with an old phone, a smartphone, a reflex camera, in an open setting, in studio).
+Relevant elements are the subjects, composition, camera angle, lighting, colors, materials, textures, background, image style, white balance, saturation, grain, mood, any legible text, number, or symbol.
 """.strip()
 
 
@@ -70,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Overwrite existing output prompt file.",
     )
+    parser.add_argument(
+        "--skip",
+        action="store_true",
+        help="Skip processing if output prompt file already exists (ignored if --force is set).",
+    )
     vision_group = parser.add_mutually_exclusive_group()
     vision_group.add_argument(
         "--vision-model",
@@ -101,6 +116,14 @@ def default_prompt_output_path(input_path: Path) -> Path:
     return input_path.with_name(f"{input_path.stem}_recreated.prompt.txt")
 
 
+def default_prompt_output_name(input_path: Path) -> str:
+    return f"{input_path.stem}_recreated.prompt.txt"
+
+
+def default_prompt_output_dir(input_dir: Path) -> Path:
+    return input_dir.with_name(f"{input_dir.name}.prompts")
+
+
 def resolve_model_choice(
     explicit_model: str,
     preset_number: int | None,
@@ -120,6 +143,14 @@ def validate_paths(input_path: Path, output_path: Path, force: bool) -> None:
         raise ValueError(f"output directory does not exist: {output_path.parent}")
     if output_path.exists() and not force:
         raise ValueError(f"refusing to overwrite existing file: {output_path}. Use --force to overwrite.")
+
+
+def is_supported_image_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
+
+
+def list_supported_images(input_dir: Path) -> list[Path]:
+    return sorted(path for path in input_dir.iterdir() if is_supported_image_file(path))
 
 
 def resolve_device_and_dtype(requested_device: str) -> tuple[str, Any]:
@@ -206,9 +237,7 @@ def clean_prompt(prompt: str) -> str:
     return " ".join(cleaned.split())
 
 
-def generate_reconstruction_prompt(
-    image: Any, model_id: str, device: str, dtype: Any
-) -> str:
+def load_vlm_pipeline(model_id: str, device: str, dtype: Any) -> Any:
     device_arg: int | str
     if device == "cuda":
         device_arg = 0
@@ -224,12 +253,14 @@ def generate_reconstruction_prompt(
             "device": device_arg,
             "dtype": dtype,
             "trust_remote_code": True,
+            "model_kwargs": {"low_cpu_mem_usage": False},
         },
         {
             "task": "image-text-to-text",
             "model": model_id,
             "device": device_arg,
             "trust_remote_code": True,
+            "model_kwargs": {"low_cpu_mem_usage": False},
         },
         {
             "task": "image-to-text",
@@ -237,12 +268,14 @@ def generate_reconstruction_prompt(
             "device": device_arg,
             "dtype": dtype,
             "trust_remote_code": True,
+            "model_kwargs": {"low_cpu_mem_usage": False},
         },
         {
             "task": "image-to-text",
             "model": model_id,
             "device": device_arg,
             "trust_remote_code": True,
+            "model_kwargs": {"low_cpu_mem_usage": False},
         },
     ]
 
@@ -261,6 +294,13 @@ def generate_reconstruction_prompt(
             "transformers to the latest version. "
             f"Underlying error: {last_error}"
         )
+
+    return vlm
+
+
+def generate_reconstruction_prompt(
+    image: Any, vlm: Any
+) -> str:
 
     message_variants = [
         [
@@ -320,17 +360,67 @@ def generate_reconstruction_prompt(
 
 def main(args: argparse.Namespace) -> None:
     input_path = args.input_image
-    output_path = args.output or default_prompt_output_path(input_path)
-    validate_paths(input_path, output_path, args.force)
-
     vision_model = resolve_model_choice(args.vision_model, args.vision_model_option, VISION_MODEL_PRESETS)
     device, dtype = resolve_device_and_dtype(args.device)
     print(f"Using device: {device}")
 
+    if input_path.is_dir():
+        if args.output is not None:
+            raise ValueError("--output cannot be used when input_image is a directory")
+
+        output_dir = default_prompt_output_dir(input_path)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        image_paths = list_supported_images(input_path)
+        if not image_paths:
+            raise ValueError(f"no supported images found in directory: {input_path}")
+
+        jobs: list[tuple[Path, Path]] = []
+        for image_path in image_paths:
+            output_path = output_dir / default_prompt_output_name(image_path)
+            if output_path.exists():
+                if args.force:
+                    pass  # Overwrite
+                elif args.skip:
+                    print(f"Skipping existing file: {output_path}")
+                    continue
+                else:
+                    raise ValueError(f"refusing to overwrite existing file: {output_path}. Use --force to overwrite or --skip to skip.")
+
+            jobs.append((image_path, output_path))
+
+        if not jobs:
+            print("Nothing to process after applying --skip/--force rules.")
+            return
+
+        print(f"Loading vision model: {vision_model}")
+        vlm = load_vlm_pipeline(model_id=vision_model, device=device, dtype=dtype)
+        print(f"Processing {len(jobs)} image(s) from: {input_path}")
+
+        for image_path, output_path in jobs:
+            source_image = load_image(image_path, args.max_size)
+            prompt = generate_reconstruction_prompt(source_image, vlm)
+            output_path.write_text(prompt + "\n", encoding="utf-8")
+            print(f"Saved prompt: {output_path}")
+        return
+
+    output_path = args.output or default_prompt_output_path(input_path)
+    if output_path.exists():
+        if args.force:
+            pass  # Overwrite
+        elif args.skip:
+            print(f"Skipping existing file: {output_path}")
+            return
+        else:
+            validate_paths(input_path, output_path, args.force)
+    else:
+        validate_paths(input_path, output_path, args.force)
+
     source_image = load_image(input_path, args.max_size)
 
     print(f"Loading vision model: {vision_model}")
-    prompt = generate_reconstruction_prompt(source_image, vision_model, device, dtype)
+    vlm = load_vlm_pipeline(model_id=vision_model, device=device, dtype=dtype)
+    prompt = generate_reconstruction_prompt(source_image, vlm)
     print(f"Generated prompt ({len(prompt)} characters).")
 
     output_path.write_text(prompt + "\n", encoding="utf-8")

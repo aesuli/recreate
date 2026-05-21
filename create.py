@@ -13,6 +13,8 @@ DEFAULT_GUIDANCE_SCALE = 3.5  # Default for Z-Image-Turbo (adjust if needed)
 DEFAULT_WIDTH = 512
 DEFAULT_HEIGHT = 512
 DIMENSION_MULTIPLE = 8
+PROMPT_FILE_SUFFIX = ".txt"
+PROMPT_STEM_SUFFIX = ".prompt"
 
 IMAGE_MODEL_PRESETS: tuple[tuple[str, str], ...] = (
     ("Tongyi-MAI/Z-Image-Turbo", "Z-Image-Turbo: fastest Z-Image variant (default)"),
@@ -77,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Overwrite existing output image.",
     )
+    parser.add_argument(
+        "--skip",
+        action="store_true",
+        help="Skip processing if output image already exists (ignored if --force is set).",
+    )
     image_group = parser.add_mutually_exclusive_group()
     image_group.add_argument(
         "--image-model",
@@ -129,9 +136,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def default_output_path(prompt_path: Path) -> Path:
     stem = prompt_path.stem
-    if stem.endswith(".prompt"):
-        stem = stem[: -len(".prompt")]
+    if stem.endswith(PROMPT_STEM_SUFFIX):
+        stem = stem[: -len(PROMPT_STEM_SUFFIX)]
     return prompt_path.with_name(f"{stem}.png")
+
+
+def default_output_name(prompt_path: Path) -> str:
+    return default_output_path(prompt_path).name
+
+
+def default_output_dir(input_dir: Path) -> Path:
+    return input_dir.with_name(f"{input_dir.name}.generated")
 
 
 def resolve_model_choice(
@@ -158,6 +173,14 @@ def validate_paths(prompt_path: Path, output_path: Path, force: bool) -> None:
         raise ValueError(f"output directory does not exist: {output_path.parent}")
     if output_path.exists() and not force:
         raise ValueError(f"refusing to overwrite existing file: {output_path}. Use --force to overwrite.")
+
+
+def is_prompt_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() == PROMPT_FILE_SUFFIX and path.stem.endswith(PROMPT_STEM_SUFFIX)
+
+
+def list_prompt_files(input_dir: Path) -> list[Path]:
+    return sorted(path for path in input_dir.iterdir() if is_prompt_file(path))
 
 
 def resolve_device_and_dtype(requested_device: str, model_id: str) -> tuple[str, Any]:
@@ -197,7 +220,7 @@ def is_nearly_black_image(image: Any) -> bool:
 
 
 def load_diffusion_pipeline(pipeline_cls: Any, model_id: str, dtype: Any) -> Any:
-    kwargs: dict[str, Any] = {"torch_dtype": dtype, "use_safetensors": True}
+    kwargs: dict[str, Any] = {"torch_dtype": dtype, "use_safetensors": True, "low_cpu_mem_usage": False}
     if dtype is torch.float16:
         kwargs["variant"] = "fp16"
 
@@ -210,17 +233,7 @@ def load_diffusion_pipeline(pipeline_cls: Any, model_id: str, dtype: Any) -> Any
         return pipeline_cls.from_pretrained(model_id, **kwargs)
 
 
-def generate_image(
-    prompt: str,
-    model_id: str,
-    device: str,
-    dtype: Any,
-    steps: int,
-    guidance_scale: float,
-    seed: int | None,
-    width: int,
-    height: int,
-) -> Any:
+def load_text2image_pipeline(model_id: str, device: str, dtype: Any) -> Any:
     from diffusers import AutoPipelineForText2Image
 
     pipe = load_diffusion_pipeline(AutoPipelineForText2Image, model_id, dtype)
@@ -236,18 +249,50 @@ def generate_image(
             if module is not None and hasattr(module, "to"):
                 module.to(device=device, dtype=dtype)
 
-    generator = None
-    if seed is not None:
-        generator_device = "cuda" if device == "cuda" else "cpu"
-        generator = torch.Generator(device=generator_device).manual_seed(seed)
+    return pipe
 
+
+def _build_generator(seed: int | None, device: str, batch_size: int) -> Any:
+    if seed is None:
+        return None
+    generator_device = "cuda" if device == "cuda" else "cpu"
+    if batch_size == 1:
+        return torch.Generator(device=generator_device).manual_seed(seed)
+    # Match per-item deterministic behavior from the previous one-by-one generation path.
+    return [torch.Generator(device=generator_device).manual_seed(seed) for _ in range(batch_size)]
+
+
+def _promote_core_modules_to_fp32(pipe: Any, device: str) -> None:
+    for module_name in ("unet", "vae", "text_encoder", "text_encoder_2"):
+        module = getattr(pipe, module_name, None)
+        if module is not None and hasattr(module, "to"):
+            module.to(device=device, dtype=torch.float32)
+
+
+def generate_images(
+    pipe: Any,
+    prompts: list[str],
+    model_id: str,
+    device: str,
+    steps: int,
+    guidance_scale: float,
+    seed: int | None,
+    width: int,
+    height: int,
+) -> list[Any]:
+    if not prompts:
+        return []
+
+    prompt_input: str | list[str] = prompts[0] if len(prompts) == 1 else prompts
     call_kwargs: dict[str, Any] = {
-        "prompt": prompt,
+        "prompt": prompt_input,
         "num_inference_steps": steps,
         "guidance_scale": guidance_scale,
         "width": width,
         "height": height,
     }
+
+    generator = _build_generator(seed=seed, device=device, batch_size=len(prompts))
     if generator is not None:
         call_kwargs["generator"] = generator
 
@@ -258,39 +303,64 @@ def generate_image(
         if "Input type (struct c10::Half) and bias type (float) should be the same" not in error_text:
             raise
 
-        # Recover from VAE/unet mixed precision by promoting core modules to fp32.
-        for module_name in ("unet", "vae", "text_encoder", "text_encoder_2"):
-            module = getattr(pipe, module_name, None)
-            if module is not None and hasattr(module, "to"):
-                module.to(device=device, dtype=torch.float32)
-
+        _promote_core_modules_to_fp32(pipe, device)
         retry_kwargs = dict(call_kwargs)
-        if seed is not None:
-            generator_device = "cuda" if device == "cuda" else "cpu"
-            retry_kwargs["generator"] = torch.Generator(device=generator_device).manual_seed(seed)
+        retry_generator = _build_generator(seed=seed, device=device, batch_size=len(prompts))
+        if retry_generator is not None:
+            retry_kwargs["generator"] = retry_generator
         result = pipe(**retry_kwargs)
 
-    if not getattr(result, "images", None):
+    images = list(getattr(result, "images", []) or [])
+    if not images:
         raise ValueError("image model did not return an image")
 
-    generated_image = result.images[0]
-    if model_id in FP32_PREFERRED_MODELS and is_nearly_black_image(generated_image):
-        for module_name in ("unet", "vae", "text_encoder", "text_encoder_2"):
-            module = getattr(pipe, module_name, None)
-            if module is not None and hasattr(module, "to"):
-                module.to(device=device, dtype=torch.float32)
+    if model_id in FP32_PREFERRED_MODELS:
+        black_indices = [index for index, image in enumerate(images) if is_nearly_black_image(image)]
+        if black_indices:
+            _promote_core_modules_to_fp32(pipe, device)
+            retry_steps = max(steps, 8)
+            for index in black_indices:
+                retry_kwargs = {
+                    "prompt": prompts[index],
+                    "num_inference_steps": retry_steps,
+                    "guidance_scale": guidance_scale,
+                    "width": width,
+                    "height": height,
+                }
+                retry_generator = _build_generator(seed=seed, device=device, batch_size=1)
+                if retry_generator is not None:
+                    retry_kwargs["generator"] = retry_generator
+                retried = pipe(**retry_kwargs)
+                retried_images = list(getattr(retried, "images", []) or [])
+                if retried_images:
+                    images[index] = retried_images[0]
 
-        retry_kwargs = dict(call_kwargs)
-        retry_kwargs["num_inference_steps"] = max(steps, 8)
-        if seed is not None:
-            generator_device = "cuda" if device == "cuda" else "cpu"
-            retry_kwargs["generator"] = torch.Generator(device=generator_device).manual_seed(seed)
+    return images
 
-        retried = pipe(**retry_kwargs)
-        if getattr(retried, "images", None):
-            generated_image = retried.images[0]
 
-    return generated_image
+def generate_image(
+    prompt: str,
+    model_id: str,
+    device: str,
+    dtype: Any,
+    steps: int,
+    guidance_scale: float,
+    seed: int | None,
+    width: int,
+    height: int,
+) -> Any:
+    pipe = load_text2image_pipeline(model_id=model_id, device=device, dtype=dtype)
+    return generate_images(
+        pipe=pipe,
+        prompts=[prompt],
+        model_id=model_id,
+        device=device,
+        steps=steps,
+        guidance_scale=guidance_scale,
+        seed=seed,
+        width=width,
+        height=height,
+    )[0]
 
 
 def read_prompt(prompt_path: Path) -> str:
@@ -302,12 +372,9 @@ def read_prompt(prompt_path: Path) -> str:
 
 
 def main(args: argparse.Namespace) -> None:
-    output_path = args.output or default_output_path(args.input_prompt)
-    validate_paths(args.input_prompt, output_path, args.force)
     validate_dimensions(args.width, args.height)
 
     image_model = resolve_model_choice(args.image_model, args.image_model_option, IMAGE_MODEL_PRESETS)
-    prompt = read_prompt(args.input_prompt)
 
     # Use per-preset defaults if steps/guidance_scale are not set
     preset_defaults = IMAGE_MODEL_PRESET_DEFAULTS.get(image_model, {})
@@ -317,19 +384,87 @@ def main(args: argparse.Namespace) -> None:
     device, dtype = resolve_device_and_dtype(args.device, image_model)
     print(f"Using device: {device}")
 
+
+    if args.input_prompt.is_dir():
+        if args.output is not None:
+            raise ValueError("--output cannot be used when input_prompt is a directory")
+
+        output_dir = default_output_dir(args.input_prompt)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        prompt_paths = list_prompt_files(args.input_prompt)
+        if not prompt_paths:
+            raise ValueError(f"no prompt files found in directory: {args.input_prompt}")
+
+        jobs: list[tuple[Path, Path]] = []
+        for prompt_path in prompt_paths:
+            output_path = output_dir / default_output_name(prompt_path)
+            if output_path.exists():
+                if args.force:
+                    pass  # Overwrite
+                elif args.skip:
+                    print(f"Skipping existing file: {output_path}")
+                    continue
+                else:
+                    raise ValueError(f"refusing to overwrite existing file: {output_path}. Use --force to overwrite or --skip to skip.")
+
+            jobs.append((prompt_path, output_path))
+
+        if not jobs:
+            print("Nothing to process after applying --skip/--force rules.")
+            return
+
+        print(f"Loading image model: {image_model}")
+        pipe = load_text2image_pipeline(model_id=image_model, device=device, dtype=dtype)
+        print(f"Processing {len(jobs)} prompt file(s) from: {args.input_prompt}")
+
+        for prompt_path, output_path in jobs:
+            prompt = read_prompt(prompt_path)
+            print("Generating image from prompt...")
+            generated_image = generate_images(
+                pipe=pipe,
+                prompts=[prompt],
+                model_id=image_model,
+                device=device,
+                steps=steps,
+                guidance_scale=guidance_scale,
+                seed=args.seed,
+                width=args.width,
+                height=args.height,
+            )[0]
+            generated_image.save(output_path)
+            print(f"Saved image: {output_path}")
+        return
+
+
+    output_path = args.output or default_output_path(args.input_prompt)
+    if output_path.exists():
+        if args.force:
+            pass  # Overwrite
+        elif args.skip:
+            print(f"Skipping existing file: {output_path}")
+            return
+        else:
+            validate_paths(args.input_prompt, output_path, args.force)
+    else:
+        validate_paths(args.input_prompt, output_path, args.force)
+
+    prompt = read_prompt(args.input_prompt)
+
     print(f"Loading image model: {image_model}")
+    pipe = load_text2image_pipeline(model_id=image_model, device=device, dtype=dtype)
     print("Generating image from prompt...")
-    generated_image = generate_image(
-        prompt=prompt,
+    generated_image = generate_images(
+        pipe=pipe,
+        prompts=[prompt],
         model_id=image_model,
         device=device,
-        dtype=dtype,
         steps=steps,
         guidance_scale=guidance_scale,
         seed=args.seed,
         width=args.width,
         height=args.height,
-    )
+    )[0]
 
     generated_image.save(output_path)
     print(f"Saved image: {output_path}")
