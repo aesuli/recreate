@@ -85,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip processing if output prompt file already exists (ignored if --force is set).",
     )
+    parser.add_argument(
+        "--print",
+        action="store_true",
+        help="Print generated prompt(s) to stdout instead of saving prompt files.",
+    )
     vision_group = parser.add_mutually_exclusive_group()
     vision_group.add_argument(
         "--vision-model",
@@ -367,18 +372,22 @@ def main(args: argparse.Namespace) -> None:
     if input_path.is_dir():
         if args.output is not None:
             raise ValueError("--output cannot be used when input_image is a directory")
+        if args.print and (args.force or args.skip):
+            raise ValueError("--force and --skip cannot be used with --print")
 
-        output_dir = default_prompt_output_dir(input_path)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = None
+        if not args.print:
+            output_dir = default_prompt_output_dir(input_path)
+            output_dir.mkdir(parents=True, exist_ok=True)
 
         image_paths = list_supported_images(input_path)
         if not image_paths:
             raise ValueError(f"no supported images found in directory: {input_path}")
 
-        jobs: list[tuple[Path, Path]] = []
+        jobs: list[tuple[Path, Path | None]] = []
         for image_path in image_paths:
-            output_path = output_dir / default_prompt_output_name(image_path)
-            if output_path.exists():
+            output_path = None if args.print else output_dir / default_prompt_output_name(image_path)
+            if output_path is not None and output_path.exists():
                 if args.force:
                     pass  # Overwrite
                 elif args.skip:
@@ -400,21 +409,30 @@ def main(args: argparse.Namespace) -> None:
         for image_path, output_path in jobs:
             source_image = load_image(image_path, args.max_size)
             prompt = generate_reconstruction_prompt(source_image, vlm)
-            output_path.write_text(prompt + "\n", encoding="utf-8")
-            print(f"Saved prompt: {output_path}")
+            if args.print:
+                print(f"=== {image_path.name} ===")
+                print(prompt)
+            else:
+                output_path.write_text(prompt + "\n", encoding="utf-8")
+                print(f"Saved prompt: {output_path}")
         return
 
     output_path = args.output or default_prompt_output_path(input_path)
-    if output_path.exists():
-        if args.force:
-            pass  # Overwrite
-        elif args.skip:
-            print(f"Skipping existing file: {output_path}")
-            return
+    if args.print and (args.output is not None or args.force or args.skip):
+        raise ValueError("--output, --force, and --skip cannot be used with --print")
+    if not args.print:
+        if output_path.exists():
+            if args.force:
+                pass  # Overwrite
+            elif args.skip:
+                print(f"Skipping existing file: {output_path}")
+                return
+            else:
+                validate_paths(input_path, output_path, args.force)
         else:
             validate_paths(input_path, output_path, args.force)
-    else:
-        validate_paths(input_path, output_path, args.force)
+    elif not input_path.exists() or not input_path.is_file():
+        raise ValueError(f"input image does not exist or is not a file: {input_path}")
 
     source_image = load_image(input_path, args.max_size)
 
@@ -423,8 +441,11 @@ def main(args: argparse.Namespace) -> None:
     prompt = generate_reconstruction_prompt(source_image, vlm)
     print(f"Generated prompt ({len(prompt)} characters).")
 
-    output_path.write_text(prompt + "\n", encoding="utf-8")
-    print(f"Saved prompt: {output_path}")
+    if args.print:
+        print(prompt)
+    else:
+        output_path.write_text(prompt + "\n", encoding="utf-8")
+        print(f"Saved prompt: {output_path}")
 
 
 if __name__ == "__main__":

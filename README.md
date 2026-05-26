@@ -41,6 +41,7 @@ python describe.py input.png --vision-model-option 2
 Useful options:
 
 - `--output PATH`
+- `--print` (print to stdout instead of saving a prompt file)
 - `--force`
 - `--vision-model MODEL`
 - `--vision-model-option {1,2,3}`
@@ -53,10 +54,23 @@ Useful options:
 python create.py <path_to_prompt_file>
 ```
 
+You can also provide the prompt without a file:
+
+```bash
+echo "A cinematic portrait of a fox in snow" | python create.py --stdin
+python create.py --ask
+python create.py --ask-multi
+```
+
+With `--ask-multi`, the script keeps asking for prompts until you submit an empty one.
+If an output filename already exists, it asks whether to overwrite (`y/N`); if not, it asks for a new filename.
+
 Default output image path:
 
 - If prompt is `name.prompt.txt`, output is `name.png`
 - For `*_recreated.prompt.txt`, output becomes `*_recreated.png`
+- For `--stdin` or `--ask` without `--output`, output is `generated.png`
+- For `--ask-multi` without `--output`, output names are `generated.png`, `generated_002.png`, `generated_003.png`, ...
 
 Example:
 
@@ -68,8 +82,11 @@ Useful options:
 
 - `--output PATH`
 - `--force`
+- `--stdin`
+- `--ask`
+- `--ask-multi`
 - `--image-model MODEL`
-- `--image-model-option {1,2,3}`
+- `--image-model-option {1,2,3,4,5}`
 - `--seed INT`
 - `--steps INT` (default `8`)
 - `--guidance-scale FLOAT` (default `6.0`)

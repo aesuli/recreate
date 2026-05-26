@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ DEFAULT_HEIGHT = 512
 DIMENSION_MULTIPLE = 8
 PROMPT_FILE_SUFFIX = ".txt"
 PROMPT_STEM_SUFFIX = ".prompt"
+DEFAULT_GENERATED_IMAGE_NAME = "generated.png"
 
 IMAGE_MODEL_PRESETS: tuple[tuple[str, str], ...] = (
     ("Tongyi-MAI/Z-Image-Turbo", "Z-Image-Turbo: fastest Z-Image variant (default)"),
@@ -27,7 +29,7 @@ IMAGE_MODEL_PRESETS: tuple[tuple[str, str], ...] = (
 # Per-preset default values for steps and guidance scale
 IMAGE_MODEL_PRESET_DEFAULTS = {
     "Tongyi-MAI/Z-Image-Turbo": {"steps": 28, "guidance_scale": 3.5},
-    "RunDiffusion/Juggernaut-Z-Image": {"steps": 35, "guidance_scale": 6.0},
+    "RunDiffusion/Juggernaut-Z-Image": {"steps": 35, "guidance_scale": 3.5},
     "stabilityai/sdxl-turbo": {"steps": 28, "guidance_scale": 3.5},
     "stabilityai/stable-diffusion-xl-base-1.0": {"steps": 30, "guidance_scale": 5.0},
     "stabilityai/stable-diffusion-3-medium-diffusers": {"steps": 30, "guidance_scale": 5.0},
@@ -64,15 +66,39 @@ MODEL_PRESET_HELP = format_model_presets(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate an image from a prompt text file using a local Diffusers model.",
+        description="Generate an image from a prompt (file, stdin, or interactive input) using a local Diffusers model.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=MODEL_PRESET_HELP,
     )
-    parser.add_argument("input_prompt", type=Path, help="Path to the input prompt text file.")
+    parser.add_argument(
+        "input_prompt",
+        nargs="?",
+        type=Path,
+        help="Path to the input prompt text file (required unless --stdin, --ask, or --ask-multi is used).",
+    )
+    prompt_source_group = parser.add_mutually_exclusive_group()
+    prompt_source_group.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read the prompt text from standard input.",
+    )
+    prompt_source_group.add_argument(
+        "--ask",
+        action="store_true",
+        help="Read the prompt text using Python input().",
+    )
+    prompt_source_group.add_argument(
+        "--ask-multi",
+        action="store_true",
+        help="Repeatedly ask for prompts using input(); stop when an empty prompt is entered.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
-        help="Output image path. Defaults to <prompt_stem>.png beside the prompt file.",
+        help=(
+            f"Output image path. Defaults to <prompt_stem>.png for file input, "
+            f"or {DEFAULT_GENERATED_IMAGE_NAME} for --stdin/--ask/--ask-multi."
+        ),
     )
     parser.add_argument(
         "--force",
@@ -169,6 +195,13 @@ def validate_paths(prompt_path: Path, output_path: Path, force: bool) -> None:
         raise ValueError(f"input prompt does not exist: {prompt_path}")
     if not prompt_path.is_file():
         raise ValueError(f"input prompt path is not a file: {prompt_path}")
+    if not output_path.parent.exists():
+        raise ValueError(f"output directory does not exist: {output_path.parent}")
+    if output_path.exists() and not force:
+        raise ValueError(f"refusing to overwrite existing file: {output_path}. Use --force to overwrite.")
+
+
+def validate_output_path(output_path: Path, force: bool) -> None:
     if not output_path.parent.exists():
         raise ValueError(f"output directory does not exist: {output_path.parent}")
     if output_path.exists() and not force:
@@ -370,6 +403,50 @@ def read_prompt(prompt_path: Path) -> str:
     return prompt
 
 
+def read_prompt_from_stdin() -> str:
+    prompt = sys.stdin.read().strip()
+    if not prompt:
+        raise ValueError("stdin prompt is empty")
+    return prompt
+
+
+def read_prompt_from_interactive_input() -> str:
+    try:
+        prompt = input("Enter prompt: ").strip()
+    except EOFError as exc:
+        raise ValueError("no prompt received from interactive input") from exc
+    if not prompt:
+        raise ValueError("interactive prompt is empty")
+    return prompt
+
+
+def ask_for_existing_file_resolution(output_path: Path) -> Path:
+    candidate = output_path
+    while candidate.exists():
+        answer = input(f"Output file already exists: {candidate}. Overwrite? [y/N]: ").strip().lower()
+        if answer in {"y", "yes"}:
+            return candidate
+
+        while True:
+            new_name = input("Enter a new output filename: ").strip()
+            if not new_name:
+                print("Filename cannot be empty.")
+                continue
+            new_path = candidate.parent / new_name
+            if not new_path.suffix:
+                new_path = new_path.with_suffix(".png")
+            candidate = new_path
+            break
+
+    return candidate
+
+
+def default_multi_output_path(base_output: Path, index: int) -> Path:
+    if index <= 1:
+        return base_output
+    return base_output.with_name(f"{base_output.stem}_{index:03d}{base_output.suffix}")
+
+
 
 def main(args: argparse.Namespace) -> None:
     validate_dimensions(args.width, args.height)
@@ -384,10 +461,16 @@ def main(args: argparse.Namespace) -> None:
     device, dtype = resolve_device_and_dtype(args.device, image_model)
     print(f"Using device: {device}")
 
+    if (args.stdin or args.ask or args.ask_multi) and args.input_prompt is not None:
+        raise ValueError("input_prompt cannot be used with --stdin, --ask, or --ask-multi")
+    if not args.stdin and not args.ask and not args.ask_multi and args.input_prompt is None:
+        raise ValueError("input_prompt is required unless --stdin, --ask, or --ask-multi is used")
 
-    if args.input_prompt.is_dir():
+    if args.input_prompt is not None and args.input_prompt.is_dir():
         if args.output is not None:
             raise ValueError("--output cannot be used when input_prompt is a directory")
+        if args.stdin or args.ask or args.ask_multi:
+            raise ValueError("--stdin, --ask, and --ask-multi cannot be used when input_prompt is a directory")
 
         output_dir = default_output_dir(args.input_prompt)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -436,8 +519,46 @@ def main(args: argparse.Namespace) -> None:
             print(f"Saved image: {output_path}")
         return
 
+    if args.input_prompt is not None:
+        output_path = args.output or default_output_path(args.input_prompt)
+    else:
+        output_path = args.output or Path(DEFAULT_GENERATED_IMAGE_NAME)
 
-    output_path = args.output or default_output_path(args.input_prompt)
+    if args.ask_multi:
+        validate_output_path(output_path, force=True)
+        print(f"Loading image model: {image_model}")
+        pipe = load_text2image_pipeline(model_id=image_model, device=device, dtype=dtype)
+
+        generated_count = 0
+        while True:
+            prompt = input("Enter prompt (empty to finish): ").strip()
+            if not prompt:
+                break
+
+            generated_count += 1
+            candidate_output_path = default_multi_output_path(output_path, generated_count)
+            if candidate_output_path.exists() and not args.force:
+                candidate_output_path = ask_for_existing_file_resolution(candidate_output_path)
+
+            print("Generating image from prompt...")
+            generated_image = generate_images(
+                pipe=pipe,
+                prompts=[prompt],
+                model_id=image_model,
+                device=device,
+                steps=steps,
+                guidance_scale=guidance_scale,
+                seed=args.seed,
+                width=args.width,
+                height=args.height,
+            )[0]
+            generated_image.save(candidate_output_path)
+            print(f"Saved image: {candidate_output_path}")
+
+        if generated_count == 0:
+            print("No prompts entered. Nothing generated.")
+        return
+
     if output_path.exists():
         if args.force:
             pass  # Overwrite
@@ -445,11 +566,22 @@ def main(args: argparse.Namespace) -> None:
             print(f"Skipping existing file: {output_path}")
             return
         else:
-            validate_paths(args.input_prompt, output_path, args.force)
+            if args.input_prompt is not None:
+                validate_paths(args.input_prompt, output_path, args.force)
+            else:
+                validate_output_path(output_path, args.force)
     else:
-        validate_paths(args.input_prompt, output_path, args.force)
+        if args.input_prompt is not None:
+            validate_paths(args.input_prompt, output_path, args.force)
+        else:
+            validate_output_path(output_path, args.force)
 
-    prompt = read_prompt(args.input_prompt)
+    if args.stdin:
+        prompt = read_prompt_from_stdin()
+    elif args.ask:
+        prompt = read_prompt_from_interactive_input()
+    else:
+        prompt = read_prompt(args.input_prompt)
 
     print(f"Loading image model: {image_model}")
     pipe = load_text2image_pipeline(model_id=image_model, device=device, dtype=dtype)
