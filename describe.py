@@ -10,7 +10,7 @@ from transformers import pipeline
 
 DEFAULT_VISION_MODEL = "openbmb/MiniCPM-V-4.6"
 DEFAULT_MAX_SIZE = 512
-DEFAULT_MAX_NEW_TOKENS = 256
+DEFAULT_MAX_NEW_TOKENS = 1024
 DIMENSION_MULTIPLE = 8
 SUPPORTED_IMAGE_SUFFIXES = {
     ".jpg",
@@ -32,9 +32,9 @@ VISION_MODEL_PRESETS: tuple[tuple[str, str, int, int], ...] = (
 VISION_MODEL_OPTION_NUMBERS = tuple(range(1, len(VISION_MODEL_PRESETS) + 1))
 
 PROMPT_REQUEST = """
-Write a prompt describing the image to enable an image generation model to replicate it.
-Include any element that is relevant to exactly replicate the image not only in its content but also in its visual appearance, e.g., the nature of the image (a photo made with an old phone, a smartphone, a reflex camera, in an open setting, in studio).
-Relevant elements are the subjects, composition, camera angle, lighting, colors, materials, textures, background, image style, white balance, saturation, grain, mood, any legible text, number, or symbol.
+Write a prompt describing the image to enable an image generation model to accurately replicate it.
+Include all the elements that are relevant to replicate the image in its content and in its visual appearance.
+Relevant elements are the subjects, their pose, look, glance, the detailed composition of the image, camera angle, lighting, colors, materials, textures, background, image style, white balance, color saturation, palette, grain, focus, blur, mood, any legible text, number, or symbol, the nature and quality of the image (a photo made with an old phone, a smartphone, a reflex camera, in an open setting, in studio).
 """.strip()
 
 
