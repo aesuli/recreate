@@ -114,7 +114,8 @@ Useful for exploring prompt evolution and image generation drift over multiple i
 
 Useful options:
 
-- `--start-from INT` (default: `0`)
+- `--start-from INT` (default: highest numbered `prompt_N.txt` or `image_N.png` in the directory)
+- `--start-file PATH` (copy a text or image file into an empty directory as `prompt_0.txt` or `image_0.png`)
 - `--steps INT` (number of iterations before exiting; default: run indefinitely)
 - `--image-model MODEL` and `--image-model-preset {1,2,3,4,5}`
 - `--vision-model MODEL` and `--vision-model-preset {1,2,3,4}`

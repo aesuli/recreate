@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 import signal
+import shutil
 import sys
 from pathlib import Path
 
@@ -9,6 +11,34 @@ import torch
 
 import describe
 import create
+
+
+def find_start_index(work_dir: Path) -> int:
+    numbered_items = []
+    for path in work_dir.iterdir():
+        match = re.fullmatch(r"(?:prompt|image)_(\d+)\.(?:txt|png)", path.name)
+        if match and path.is_file():
+            numbered_items.append(int(match.group(1)))
+    return max(numbered_items, default=0)
+
+
+def copy_start_file(start_file: Path, work_dir: Path) -> Path:
+    if not start_file.is_file():
+        raise ValueError(f"start file is not a file: {start_file}")
+    if any(work_dir.iterdir()):
+        raise ValueError("--start-file requires an empty loop directory")
+
+    suffix = start_file.suffix.lower()
+    if suffix == ".txt":
+        destination = work_dir / "prompt_0.txt"
+    elif suffix in describe.SUPPORTED_IMAGE_SUFFIXES:
+        destination = work_dir / "image_0.png"
+    else:
+        supported = ", ".join(sorted({".txt", *describe.SUPPORTED_IMAGE_SUFFIXES}))
+        raise ValueError(f"unsupported start file type {start_file.suffix!r}; use one of: {supported}")
+
+    shutil.copy2(start_file, destination)
+    return destination
 
 
 def _format_vision_presets() -> str:
@@ -30,11 +60,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Infinite loop: prompt -> image -> next prompt -> next image, until killed."
     )
     parser.add_argument("directory", type=Path, help="Directory containing prompt_N.txt files.")
-    parser.add_argument(
+    start_group = parser.add_mutually_exclusive_group()
+    start_group.add_argument(
         "--start-from",
         type=int,
-        default=0,
-        help="Index of the first prompt to read (default: 0).",
+        default=None,
+        help="Index of the first prompt to read (default: highest numbered prompt or image).",
+    )
+    start_group.add_argument(
+        "--start-file",
+        type=Path,
+        help="Copy a .txt or image file into an empty directory as prompt_0.txt or image_0.png.",
     )
     parser.add_argument(
         "--device",
@@ -111,6 +147,16 @@ def main() -> None:
         print(f"error: not a directory: {work_dir}", file=sys.stderr)
         sys.exit(1)
 
+    if args.start_file is not None:
+        try:
+            start_path = copy_start_file(args.start_file.resolve(), work_dir)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(f"Copied {args.start_file} to {start_path}")
+        idx = 0
+    else:
+        idx = args.start_from if args.start_from is not None else find_start_index(work_dir)
+
     running = True
 
     def handle_signal(signum: int, frame: object) -> None:
@@ -122,7 +168,6 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    idx = args.start_from
     device = args.device
     remaining_steps = args.steps
 
