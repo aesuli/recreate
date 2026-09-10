@@ -41,20 +41,6 @@ def copy_start_file(start_file: Path, work_dir: Path) -> Path:
     return destination
 
 
-def _format_vision_presets() -> str:
-    lines = ["Vision model presets:"]
-    for i, (model_id, description, _, _) in enumerate(describe.VISION_MODEL_PRESETS, 1):
-        lines.append(f"  {i}. {model_id} - {description}")
-    return "\n".join(lines)
-
-
-def _format_image_presets() -> str:
-    lines = ["Image model presets:"]
-    for i, (model_id, description) in enumerate(create.IMAGE_MODEL_PRESETS, 1):
-        lines.append(f"  {i}. {model_id} - {description}")
-    return "\n".join(lines)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Infinite loop: prompt -> image -> next prompt -> next image, until killed."
@@ -78,29 +64,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Execution device. Default: auto",
     )
-    image_group = parser.add_mutually_exclusive_group()
-    image_group.add_argument(
+    parser.add_argument(
         "--image-model",
         default=create.DEFAULT_IMAGE_MODEL,
-        help=f"Diffusers model for text-to-image generation. Default: {create.DEFAULT_IMAGE_MODEL}\n\n{_format_image_presets()}",
+        help="Diffusers model for text-to-image generation.",
     )
-    image_group.add_argument(
-        "--image-model-preset",
-        type=int,
-        choices=create.IMAGE_MODEL_PRESET_NUMBERS,
-        help="Select a numbered image-model preset. See the preset list in --help.",
-    )
-    vision_group = parser.add_mutually_exclusive_group()
-    vision_group.add_argument(
+    parser.add_argument(
         "--vision-model",
         default=describe.DEFAULT_VISION_MODEL,
-        help=f"Hugging Face VLM for image-to-prompt generation. Default: {describe.DEFAULT_VISION_MODEL}\n\n{_format_vision_presets()}",
-    )
-    vision_group.add_argument(
-        "--vision-model-preset",
-        type=int,
-        choices=describe.VISION_MODEL_PRESET_NUMBERS,
-        help="Select a numbered vision-model preset. See the preset list in --help.",
+        help="Vision model name for image-to-prompt generation.",
     )
     parser.add_argument(
         "--width",
@@ -130,17 +102,8 @@ def main() -> None:
     if args.steps is not None and args.steps < 0:
         parser.error("--steps must be >= 0")
 
-    # Resolve model choices
-    image_model = create.resolve_model_choice(
-        args.image_model,
-        args.image_model_preset,
-        create.IMAGE_MODEL_PRESETS,
-    )
-    vision_model = describe.resolve_model_choice(
-        args.vision_model,
-        args.vision_model_preset,
-        describe.VISION_MODEL_PRESETS,
-    )
+    image_model = args.image_model
+    vision_model = args.vision_model
 
     work_dir = args.directory.resolve()
     if not work_dir.is_dir():
@@ -178,21 +141,17 @@ def main() -> None:
         device=vlm_device,
         dtype=vlm_dtype,
     )
-    print(f"Vision model loaded on {vlm_device}")
+    print(f"Vision model loaded: {vision_model} on {vlm_device}")
 
     print("Loading image model (create)...")
     create_device, create_dtype = create.resolve_device_and_dtype(device, image_model)
 
-    preset_defaults = create.IMAGE_MODEL_PRESET_DEFAULTS.get(
-        image_model,
-        {"steps": create.DEFAULT_STEPS, "guidance_scale": create.DEFAULT_GUIDANCE_SCALE},
-    )
     pipe = create.load_text2image_pipeline(
         model_id=image_model,
         device=create_device,
         dtype=create_dtype,
     )
-    print(f"Image model loaded on {create_device}")
+    print(f"Image model loaded: {image_model} on {create_device}")
 
     while running and (remaining_steps is None or remaining_steps > 0):
         prompt_path = work_dir / f"prompt_{idx}.txt"
@@ -226,8 +185,8 @@ def main() -> None:
                 prompts=[prompt_text],
                 model_id=image_model,
                 device=create_device,
-                steps=preset_defaults["steps"],
-                guidance_scale=preset_defaults["guidance_scale"],
+                steps=create.DEFAULT_STEPS,
+                guidance_scale=create.DEFAULT_GUIDANCE_SCALE,
                 seed=None,
                 width=args.width,
                 height=args.height,

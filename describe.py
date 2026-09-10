@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from transformers import pipeline
 
-DEFAULT_VISION_MODEL = "openbmb/MiniCPM-V-4.6"
+DEFAULT_VISION_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 DEFAULT_MAX_SIZE = 512
 DEFAULT_MAX_NEW_TOKENS = 1024
 DIMENSION_MULTIPLE = 8
@@ -22,14 +22,6 @@ SUPPORTED_IMAGE_SUFFIXES = {
     ".tif",
     ".tiff",
 }
-
-VISION_MODEL_PRESETS: tuple[tuple[str, str, int, int], ...] = (
-    ("openbmb/MiniCPM-V-4.6", "default image-text-to-text model", 512, 256),
-    ("HuggingFaceTB/SmolVLM-256M-Instruct", "smallest and fastest local VLM", 256, 128),
-    ("llava-hf/llava-1.5-7b-hf", "stronger general-purpose 7B vision-language model", 1024, 512),
-    ("Qwen/Qwen2.5-VL-7B-Instruct", "largest and strongest prompt-generation option", 2048, 1024),
-)
-VISION_MODEL_PRESET_NUMBERS = tuple(range(1, len(VISION_MODEL_PRESETS) + 1))
 
 PROMPT_REQUEST = """
 Write a prompt describing the image to enable an image generation model to accurately replicate it.
@@ -48,26 +40,9 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def format_model_presets(title: str, presets: tuple[tuple[str, str, int, int], ...]) -> str:
-    lines = [title]
-    for index, (model_id, description, max_size, max_new_tokens) in enumerate(presets, start=1):
-        lines.append(
-            f"  {index}. {model_id} - {description} (Max Size: {max_size}, Max New Tokens: {max_new_tokens})"
-        )
-    return "\n".join(lines)
-
-
-MODEL_PRESET_HELP = format_model_presets(
-    "Vision model presets, from lighter to stronger:",
-    VISION_MODEL_PRESETS,
-)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate a text prompt from an input image using a local vision-language model.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=MODEL_PRESET_HELP,
     )
     parser.add_argument("input_image", type=Path, help="Path to the image to describe.")
     parser.add_argument(
@@ -90,17 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print generated prompt(s) to stdout instead of saving prompt files.",
     )
-    vision_group = parser.add_mutually_exclusive_group()
-    vision_group.add_argument(
+    parser.add_argument(
         "--vision-model",
         default=DEFAULT_VISION_MODEL,
-        help=f"Local Hugging Face VLM used to describe the input image. Default: {DEFAULT_VISION_MODEL}",
-    )
-    vision_group.add_argument(
-        "--vision-model-preset",
-        type=int,
-        choices=VISION_MODEL_PRESET_NUMBERS,
-        help="Select a numbered vision-model preset. See the preset list in --help.",
+        help=f"Name of the vision model used to describe the input image. Default: {DEFAULT_VISION_MODEL}",
     )
     parser.add_argument(
         "--max-size",
@@ -127,16 +95,6 @@ def default_prompt_output_name(input_path: Path) -> str:
 
 def default_prompt_output_dir(input_dir: Path) -> Path:
     return input_dir.with_name(f"{input_dir.name}.prompts")
-
-
-def resolve_model_choice(
-    explicit_model: str,
-    preset_number: int | None,
-    presets: tuple[tuple[str, str], ...],
-) -> str:
-    if preset_number is None:
-        return explicit_model
-    return presets[preset_number - 1][0]
 
 
 def validate_paths(input_path: Path, output_path: Path, force: bool) -> None:
@@ -365,7 +323,7 @@ def generate_reconstruction_prompt(
 
 def main(args: argparse.Namespace) -> None:
     input_path = args.input_image
-    vision_model = resolve_model_choice(args.vision_model, args.vision_model_preset, VISION_MODEL_PRESETS)
+    vision_model = args.vision_model
     device, dtype = resolve_device_and_dtype(args.device)
     print(f"Using device: {device}")
 
@@ -404,6 +362,7 @@ def main(args: argparse.Namespace) -> None:
 
         print(f"Loading vision model: {vision_model}")
         vlm = load_vlm_pipeline(model_id=vision_model, device=device, dtype=dtype)
+        print(f"Vision model loaded: {vision_model} on {device}")
         print(f"Processing {len(jobs)} image(s) from: {input_path}")
 
         for image_path, output_path in jobs:
@@ -438,6 +397,7 @@ def main(args: argparse.Namespace) -> None:
 
     print(f"Loading vision model: {vision_model}")
     vlm = load_vlm_pipeline(model_id=vision_model, device=device, dtype=dtype)
+    print(f"Vision model loaded: {vision_model} on {device}")
     prompt = generate_reconstruction_prompt(source_image, vlm)
     print(f"Generated prompt ({len(prompt)} characters).")
 

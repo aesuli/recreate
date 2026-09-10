@@ -9,36 +9,15 @@ import torch
 from PIL import ImageStat
 
 DEFAULT_IMAGE_MODEL = "Tongyi-MAI/Z-Image-Turbo"
-DEFAULT_STEPS = 28  # Default for Z-Image-Turbo (adjust if needed)
-DEFAULT_GUIDANCE_SCALE = 3.5  # Default for Z-Image-Turbo (adjust if needed)
-DEFAULT_WIDTH = 512
-DEFAULT_HEIGHT = 512
-DIMENSION_MULTIPLE = 8
+DEFAULT_STEPS = 40  
+DEFAULT_GUIDANCE_SCALE = 6.0
+DEFAULT_WIDTH = 1024
+DEFAULT_HEIGHT = 1024
+DIMENSION_MULTIPLE = 32
+DEFAULT_NEGATIVE_PROMPT = "AI artifacts, deformed, errors, inconsistencies, AI slop"
 PROMPT_FILE_SUFFIX = ".txt"
 PROMPT_STEM_SUFFIX = ".prompt"
 DEFAULT_GENERATED_IMAGE_NAME = "generated.png"
-
-IMAGE_MODEL_PRESETS: tuple[tuple[str, str], ...] = (
-    ("Tongyi-MAI/Z-Image-Turbo", "Z-Image-Turbo: fastest Z-Image variant (default)"),
-    ("RunDiffusion/Juggernaut-Z-Image", "Juggernaut Z: cinematic, sharp, and balanced"),
-    ("stabilityai/sdxl-turbo", "fastest SDXL option for quick recreations"),
-    ("stabilityai/stable-diffusion-xl-base-1.0", "higher-quality SDXL base model"),
-    ("stabilityai/stable-diffusion-3-medium-diffusers", "most capable preset, but heaviest"),
-)
-
-# Per-preset default values for steps and guidance scale
-IMAGE_MODEL_PRESET_DEFAULTS = {
-    "Tongyi-MAI/Z-Image-Turbo": {"steps": 28, "guidance_scale": 3.5},
-    "RunDiffusion/Juggernaut-Z-Image": {"steps": 35, "guidance_scale": 3.5},
-    "stabilityai/sdxl-turbo": {"steps": 28, "guidance_scale": 3.5},
-    "stabilityai/stable-diffusion-xl-base-1.0": {"steps": 30, "guidance_scale": 5.0},
-    "stabilityai/stable-diffusion-3-medium-diffusers": {"steps": 30, "guidance_scale": 5.0},
-}
-IMAGE_MODEL_PRESET_NUMBERS = tuple(range(1, len(IMAGE_MODEL_PRESETS) + 1))
-FP32_PREFERRED_MODELS = {
-    "Tongyi-MAI/Z-Image-Turbo",
-    "RunDiffusion/Juggernaut-Z-Image",
-}
 
 
 def positive_int(value: str) -> int:
@@ -51,24 +30,9 @@ def positive_int(value: str) -> int:
     return parsed
 
 
-def format_model_presets(title: str, presets: tuple[tuple[str, str], ...]) -> str:
-    lines = [title]
-    for index, (model_id, description) in enumerate(presets, start=1):
-        lines.append(f"  {index}. {model_id} - {description}")
-    return "\n".join(lines)
-
-
-MODEL_PRESET_HELP = format_model_presets(
-    "Image model presets, from lighter to stronger:",
-    IMAGE_MODEL_PRESETS,
-)
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate an image from a prompt (file, stdin, or interactive input) using a local Diffusers model.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=MODEL_PRESET_HELP,
     )
     parser.add_argument(
         "input_prompt",
@@ -110,17 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip processing if output image already exists (ignored if --force is set).",
     )
-    image_group = parser.add_mutually_exclusive_group()
-    image_group.add_argument(
+    parser.add_argument(
         "--image-model",
         default=DEFAULT_IMAGE_MODEL,
-        help=f"Local Diffusers model used to generate the image. Default: {DEFAULT_IMAGE_MODEL}",
-    )
-    image_group.add_argument(
-        "--image-model-preset",
-        type=int,
-        choices=IMAGE_MODEL_PRESET_NUMBERS,
-        help="Select a numbered image-model preset. See the preset list in --help.",
+        help=f"Name of the image generation model used to generate the image. Default: {DEFAULT_IMAGE_MODEL}",
     )
     parser.add_argument(
         "--seed",
@@ -130,14 +87,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--steps",
         type=positive_int,
-        default=None,
-        help="Diffusion inference steps. Uses the preset's recommended value if not set.",
+        default=DEFAULT_STEPS,
+        help=f"Diffusion inference steps. Default:{DEFAULT_STEPS}",
     )
     parser.add_argument(
         "--guidance-scale",
         type=float,
-        default=None,
-        help="Classifier-free guidance scale. Uses the preset's recommended value if not set.",
+        default=DEFAULT_GUIDANCE_SCALE,
+        help=f"Classifier-free guidance scale. Default: {DEFAULT_GUIDANCE_SCALE}",
+    )
+    parser.add_argument(
+        "--negative-prompt",
+        type=str,
+        default=DEFAULT_NEGATIVE_PROMPT,
+        help=(
+            "Negative prompt describing what to avoid. Required for guidance-scale/"
+            f"true_cfg_scale to have any effect. Default: {DEFAULT_NEGATIVE_PROMPT!r}"
+        ),
     )
     parser.add_argument(
         "--width",
@@ -173,16 +139,6 @@ def default_output_name(prompt_path: Path) -> str:
 
 def default_output_dir(input_dir: Path) -> Path:
     return input_dir.with_name(f"{input_dir.name}.generated")
-
-
-def resolve_model_choice(
-    explicit_model: str,
-    preset_number: int | None,
-    presets: tuple[tuple[str, str], ...],
-) -> str:
-    if preset_number is None:
-        return explicit_model
-    return presets[preset_number - 1][0]
 
 
 def validate_dimensions(width: int, height: int) -> None:
@@ -234,10 +190,8 @@ def resolve_device_and_dtype(requested_device: str, model_id: str) -> tuple[str,
         if not mps_available:
             raise ValueError("MPS was requested, but torch.backends.mps.is_available() is false")
 
-    # Keep non-CUDA in fp32 for stability.
     if device == "cuda":
-        # Some SDXL derivatives are more stable in full precision.
-        dtype = torch.float32 if model_id in FP32_PREFERRED_MODELS else torch.float16
+        dtype = torch.bfloat16
     else:
         dtype = torch.float32
     return device, dtype
@@ -253,7 +207,11 @@ def is_nearly_black_image(image: Any) -> bool:
 
 
 def load_diffusion_pipeline(pipeline_cls: Any, model_id: str, dtype: Any) -> Any:
-    kwargs: dict[str, Any] = {"torch_dtype": dtype, "use_safetensors": True, "low_cpu_mem_usage": False}
+    kwargs: dict[str, Any] = {
+        "torch_dtype": dtype, 
+        "use_safetensors": True, 
+        "low_cpu_mem_usage": False,
+    }
     if dtype is torch.float16:
         kwargs["variant"] = "fp16"
 
@@ -277,7 +235,7 @@ def load_text2image_pipeline(model_id: str, device: str, dtype: Any) -> Any:
         pipe = pipe.to(device=device, torch_dtype=dtype)
     except TypeError:
         pipe = pipe.to(device)
-        for module_name in ("unet", "vae", "text_encoder", "text_encoder_2"):
+        for module_name in ("unet", "vae", "text_encoder", "text_encoder_2", "transformer"):
             module = getattr(pipe, module_name, None)
             if module is not None and hasattr(module, "to"):
                 module.to(device=device, dtype=dtype)
@@ -296,11 +254,23 @@ def _build_generator(seed: int | None, device: str, batch_size: int) -> Any:
 
 
 def _promote_core_modules_to_fp32(pipe: Any, device: str) -> None:
-    for module_name in ("unet", "vae", "text_encoder", "text_encoder_2"):
+    for module_name in ("unet", "vae", "text_encoder", "text_encoder_2", "transformer"):
         module = getattr(pipe, module_name, None)
         if module is not None and hasattr(module, "to"):
             module.to(device=device, dtype=torch.float32)
-
+def _pipeline_accepts_kwarg(pipe: Any, name: str) -> bool:
+    import inspect
+ 
+    call = getattr(pipe, "__call__", None)
+    if call is None:
+        return False
+    try:
+        params = inspect.signature(call).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+ 
+ 
 
 def generate_images(
     pipe: Any,
@@ -312,6 +282,7 @@ def generate_images(
     seed: int | None,
     width: int,
     height: int,
+    negative_prompt: str | None = None,
 ) -> list[Any]:
     if not prompts:
         return []
@@ -324,6 +295,21 @@ def generate_images(
         "width": width,
         "height": height,
     }
+    # Qwen-Image's pipeline exposes real classifier-free guidance as
+    # true_cfg_scale (guidance_scale there is a distilled/embedded value that
+    # usually stays at 1.0). Prefer true_cfg_scale when the pipeline has it,
+    # otherwise fall back to the generic guidance_scale kwarg.
+    if _pipeline_accepts_kwarg(pipe, "true_cfg_scale"):
+        call_kwargs["true_cfg_scale"] = guidance_scale
+    else:
+        call_kwargs["guidance_scale"] = guidance_scale
+ 
+    # CFG (true_cfg_scale) has no effect without a negative prompt to steer away from.
+    if negative_prompt and _pipeline_accepts_kwarg(pipe, "negative_prompt"):
+        neg_input: str | list[str] = (
+            negative_prompt if len(prompts) == 1 else [negative_prompt] * len(prompts)
+        )
+        call_kwargs["negative_prompt"] = neg_input
 
     generator = _build_generator(seed=seed, device=device, batch_size=len(prompts))
     if generator is not None:
@@ -347,27 +333,6 @@ def generate_images(
     if not images:
         raise ValueError("image model did not return an image")
 
-    if model_id in FP32_PREFERRED_MODELS:
-        black_indices = [index for index, image in enumerate(images) if is_nearly_black_image(image)]
-        if black_indices:
-            _promote_core_modules_to_fp32(pipe, device)
-            retry_steps = max(steps, 8)
-            for index in black_indices:
-                retry_kwargs = {
-                    "prompt": prompts[index],
-                    "num_inference_steps": retry_steps,
-                    "guidance_scale": guidance_scale,
-                    "width": width,
-                    "height": height,
-                }
-                retry_generator = _build_generator(seed=seed, device=device, batch_size=1)
-                if retry_generator is not None:
-                    retry_kwargs["generator"] = retry_generator
-                retried = pipe(**retry_kwargs)
-                retried_images = list(getattr(retried, "images", []) or [])
-                if retried_images:
-                    images[index] = retried_images[0]
-
     return images
 
 
@@ -381,6 +346,7 @@ def generate_image(
     seed: int | None,
     width: int,
     height: int,
+    negative_prompt: str | None = None,
 ) -> Any:
     pipe = load_text2image_pipeline(model_id=model_id, device=device, dtype=dtype)
     return generate_images(
@@ -393,6 +359,7 @@ def generate_image(
         seed=seed,
         width=width,
         height=height,
+        negative_prompt=negative_prompt,
     )[0]
 
 
@@ -451,12 +418,12 @@ def default_multi_output_path(base_output: Path, index: int) -> Path:
 def main(args: argparse.Namespace) -> None:
     validate_dimensions(args.width, args.height)
 
-    image_model = resolve_model_choice(args.image_model, args.image_model_preset, IMAGE_MODEL_PRESETS)
+    image_model = args.image_model
 
-    # Use per-preset defaults if steps/guidance_scale are not set
-    preset_defaults = IMAGE_MODEL_PRESET_DEFAULTS.get(image_model, {})
-    steps = args.steps if args.steps is not None else preset_defaults.get("steps", DEFAULT_STEPS)
-    guidance_scale = args.guidance_scale if args.guidance_scale is not None else preset_defaults.get("guidance_scale", DEFAULT_GUIDANCE_SCALE)
+    steps = args.steps if args.steps is not None else DEFAULT_STEPS
+    guidance_scale = args.guidance_scale if args.guidance_scale is not None else DEFAULT_GUIDANCE_SCALE
+
+    negative_prompt = args.negative_prompt
 
     device, dtype = resolve_device_and_dtype(args.device, image_model)
     print(f"Using device: {device}")
@@ -499,6 +466,7 @@ def main(args: argparse.Namespace) -> None:
 
         print(f"Loading image model: {image_model}")
         pipe = load_text2image_pipeline(model_id=image_model, device=device, dtype=dtype)
+        print(f"Image model loaded: {image_model} on {device}")
         print(f"Processing {len(jobs)} prompt file(s) from: {args.input_prompt}")
 
         for prompt_path, output_path in jobs:
@@ -514,6 +482,7 @@ def main(args: argparse.Namespace) -> None:
                 seed=args.seed,
                 width=args.width,
                 height=args.height,
+                negative_prompt=negative_prompt,
             )[0]
             generated_image.save(output_path)
             print(f"Saved image: {output_path}")
@@ -528,6 +497,7 @@ def main(args: argparse.Namespace) -> None:
         validate_output_path(output_path, force=True)
         print(f"Loading image model: {image_model}")
         pipe = load_text2image_pipeline(model_id=image_model, device=device, dtype=dtype)
+        print(f"Image model loaded: {image_model} on {device}")
 
         generated_count = 0
         while True:
@@ -551,6 +521,7 @@ def main(args: argparse.Namespace) -> None:
                 seed=args.seed,
                 width=args.width,
                 height=args.height,
+                negative_prompt=negative_prompt,
             )[0]
             generated_image.save(candidate_output_path)
             print(f"Saved image: {candidate_output_path}")
@@ -596,6 +567,7 @@ def main(args: argparse.Namespace) -> None:
         seed=args.seed,
         width=args.width,
         height=args.height,
+        negative_prompt=negative_prompt,
     )[0]
 
     generated_image.save(output_path)

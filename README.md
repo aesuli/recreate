@@ -18,10 +18,10 @@ Create a Python environment and install dependencies:
 pip install -r requirements.txt
 ```
 
-The first real run downloads selected model weights. Defaults:
+The first real run downloads the selected model weights. Defaults:
 
-- Vision model: `HuggingFaceTB/SmolVLM-256M-Instruct`
-- Image model: `stabilityai/sdxl-turbo`
+- Vision model: `Qwen/Qwen3-VL-8B-Instruct`
+- Image model: `Tongyi-MAI/Z-Image-Turbo`
 
 For NVIDIA GPUs, install the PyTorch build that matches your CUDA version first.
 
@@ -38,7 +38,7 @@ Default output prompt path:
 Example:
 
 ```bash
-python describe.py input.png --vision-model-preset 2
+python describe.py input.png --vision-model Qwen/Qwen3-VL-8B-Instruct
 ```
 
 Useful options:
@@ -47,7 +47,6 @@ Useful options:
 - `--print` (print to stdout instead of saving a prompt file)
 - `--force`
 - `--vision-model MODEL`
-- `--vision-model-preset {1,2,3,4}`
 - `--max-size INT` (default `512`)
 - `--device auto|cuda|mps|cpu`
 
@@ -78,7 +77,7 @@ Default output image path:
 Example:
 
 ```bash
-python create.py input_recreated.prompt.txt --image-model-preset 1 --width 768 --height 512
+python create.py input_recreated.prompt.txt --image-model Tongyi-MAI/Z-Image-Turbo --width 768 --height 512
 ```
 
 Useful options:
@@ -89,10 +88,9 @@ Useful options:
 - `--ask`
 - `--ask-multi`
 - `--image-model MODEL`
-- `--image-model-preset {1,2,3,4,5}`
 - `--seed INT`
-- `--steps INT` (default `8`)
-- `--guidance-scale FLOAT` (default `6.0`)
+- `--steps INT` (default `28`)
+- `--guidance-scale FLOAT` (default `3.5`)
 - `--width INT` and `--height INT` (must be multiples of `8`)
 - `--device auto|cuda|mps|cpu`
 
@@ -117,33 +115,10 @@ Useful options:
 - `--start-from INT` (default: highest numbered `prompt_N.txt` or `image_N.png` in the directory)
 - `--start-file PATH` (copy a text or image file into an empty directory as `prompt_0.txt` or `image_0.png`)
 - `--steps INT` (number of iterations before exiting; default: run indefinitely)
-- `--image-model MODEL` and `--image-model-preset {1,2,3,4,5}`
-- `--vision-model MODEL` and `--vision-model-preset {1,2,3,4}`
+- `--image-model MODEL`
+- `--vision-model MODEL`
 - `--width INT` and `--height INT`
 - `--device auto|cuda|mps|cpu`
-
-## Model Presets
-
-Both `describe.py` and `create.py` support preset model options for quick access to alternative models.
-
-### Vision Models (image-to-prompt)
-
-Use `--vision-model-preset {1,2,3,4}` or `--vision-model MODEL`:
-
-1. `openbmb/MiniCPM-V-4.6` (default) - Image-text-to-text model. Good balance of speed and quality.
-2. `HuggingFaceTB/SmolVLM-256M-Instruct` - Smallest and fastest local VLM. Best for low-resource setups.
-3. `llava-hf/llava-1.5-7b-hf` - Stronger general-purpose 7B vision-language model. Better prompts than default.
-4. `Qwen/Qwen2.5-VL-7B-Instruct` - Largest and strongest option. Most detailed descriptions, highest memory requirement.
-
-### Image Models (text-to-image)
-
-Use `--image-model-preset {1,2,3,4,5}` or `--image-model MODEL`:
-
-1. `Tongyi-MAI/Z-Image-Turbo` (default) - Fastest Z-Image variant. Quick generation with reasonable quality.
-2. `RunDiffusion/Juggernaut-Z-Image` - Cinematic, sharp, and balanced. Good for realistic outputs.
-3. `stabilityai/sdxl-turbo` - Fastest SDXL option. Quick recreations, slightly lower quality than base SDXL.
-4. `stabilityai/stable-diffusion-xl-base-1.0` - Higher-quality SDXL base model. Better results, slower generation.
-5. `stabilityai/stable-diffusion-3-medium-diffusers` - Most capable preset. Best quality, heaviest resource usage.
 
 ## License
 
