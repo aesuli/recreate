@@ -29,7 +29,7 @@ VISION_MODEL_PRESETS: tuple[tuple[str, str, int, int], ...] = (
     ("llava-hf/llava-1.5-7b-hf", "stronger general-purpose 7B vision-language model", 1024, 512),
     ("Qwen/Qwen2.5-VL-7B-Instruct", "largest and strongest prompt-generation option", 2048, 1024),
 )
-VISION_MODEL_OPTION_NUMBERS = tuple(range(1, len(VISION_MODEL_PRESETS) + 1))
+VISION_MODEL_PRESET_NUMBERS = tuple(range(1, len(VISION_MODEL_PRESETS) + 1))
 
 PROMPT_REQUEST = """
 Write a prompt describing the image to enable an image generation model to accurately replicate it.
@@ -97,9 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Local Hugging Face VLM used to describe the input image. Default: {DEFAULT_VISION_MODEL}",
     )
     vision_group.add_argument(
-        "--vision-model-option",
+        "--vision-model-preset",
         type=int,
-        choices=VISION_MODEL_OPTION_NUMBERS,
+        choices=VISION_MODEL_PRESET_NUMBERS,
         help="Select a numbered vision-model preset. See the preset list in --help.",
     )
     parser.add_argument(
@@ -365,7 +365,7 @@ def generate_reconstruction_prompt(
 
 def main(args: argparse.Namespace) -> None:
     input_path = args.input_image
-    vision_model = resolve_model_choice(args.vision_model, args.vision_model_option, VISION_MODEL_PRESETS)
+    vision_model = resolve_model_choice(args.vision_model, args.vision_model_preset, VISION_MODEL_PRESETS)
     device, dtype = resolve_device_and_dtype(args.device)
     print(f"Using device: {device}")
 

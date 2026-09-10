@@ -11,6 +11,20 @@ import describe
 import create
 
 
+def _format_vision_presets() -> str:
+    lines = ["Vision model presets:"]
+    for i, (model_id, description, _, _) in enumerate(describe.VISION_MODEL_PRESETS, 1):
+        lines.append(f"  {i}. {model_id} - {description}")
+    return "\n".join(lines)
+
+
+def _format_image_presets() -> str:
+    lines = ["Image model presets:"]
+    for i, (model_id, description) in enumerate(create.IMAGE_MODEL_PRESETS, 1):
+        lines.append(f"  {i}. {model_id} - {description}")
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Infinite loop: prompt -> image -> next prompt -> next image, until killed."
@@ -28,15 +42,29 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Execution device. Default: auto",
     )
-    parser.add_argument(
+    image_group = parser.add_mutually_exclusive_group()
+    image_group.add_argument(
         "--image-model",
         default=create.DEFAULT_IMAGE_MODEL,
-        help="Diffusers model for text-to-image generation.",
+        help=f"Diffusers model for text-to-image generation. Default: {create.DEFAULT_IMAGE_MODEL}\n\n{_format_image_presets()}",
     )
-    parser.add_argument(
+    image_group.add_argument(
+        "--image-model-preset",
+        type=int,
+        choices=create.IMAGE_MODEL_PRESET_NUMBERS,
+        help="Select a numbered image-model preset. See the preset list in --help.",
+    )
+    vision_group = parser.add_mutually_exclusive_group()
+    vision_group.add_argument(
         "--vision-model",
         default=describe.DEFAULT_VISION_MODEL,
-        help="Hugging Face VLM for image-to-prompt generation.",
+        help=f"Hugging Face VLM for image-to-prompt generation. Default: {describe.DEFAULT_VISION_MODEL}\n\n{_format_vision_presets()}",
+    )
+    vision_group.add_argument(
+        "--vision-model-preset",
+        type=int,
+        choices=describe.VISION_MODEL_PRESET_NUMBERS,
+        help="Select a numbered vision-model preset. See the preset list in --help.",
     )
     parser.add_argument(
         "--width",
@@ -66,6 +94,18 @@ def main() -> None:
     if args.steps is not None and args.steps < 0:
         parser.error("--steps must be >= 0")
 
+    # Resolve model choices
+    image_model = create.resolve_model_choice(
+        args.image_model,
+        args.image_model_preset,
+        create.IMAGE_MODEL_PRESETS,
+    )
+    vision_model = describe.resolve_model_choice(
+        args.vision_model,
+        args.vision_model_preset,
+        describe.VISION_MODEL_PRESETS,
+    )
+
     work_dir = args.directory.resolve()
     if not work_dir.is_dir():
         print(f"error: not a directory: {work_dir}", file=sys.stderr)
@@ -89,21 +129,21 @@ def main() -> None:
     print("Loading vision model (describe)...")
     vlm_device, vlm_dtype = describe.resolve_device_and_dtype(device)
     vlm = describe.load_vlm_pipeline(
-        model_id=args.vision_model,
+        model_id=vision_model,
         device=vlm_device,
         dtype=vlm_dtype,
     )
     print(f"Vision model loaded on {vlm_device}")
 
     print("Loading image model (create)...")
-    create_device, create_dtype = create.resolve_device_and_dtype(device, args.image_model)
+    create_device, create_dtype = create.resolve_device_and_dtype(device, image_model)
 
     preset_defaults = create.IMAGE_MODEL_PRESET_DEFAULTS.get(
-        args.image_model,
+        image_model,
         {"steps": create.DEFAULT_STEPS, "guidance_scale": create.DEFAULT_GUIDANCE_SCALE},
     )
     pipe = create.load_text2image_pipeline(
-        model_id=args.image_model,
+        model_id=image_model,
         device=create_device,
         dtype=create_dtype,
     )
@@ -139,7 +179,7 @@ def main() -> None:
             generated = create.generate_images(
                 pipe=pipe,
                 prompts=[prompt_text],
-                model_id=args.image_model,
+                model_id=image_model,
                 device=create_device,
                 steps=preset_defaults["steps"],
                 guidance_scale=preset_defaults["guidance_scale"],

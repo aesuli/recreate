@@ -34,7 +34,7 @@ IMAGE_MODEL_PRESET_DEFAULTS = {
     "stabilityai/stable-diffusion-xl-base-1.0": {"steps": 30, "guidance_scale": 5.0},
     "stabilityai/stable-diffusion-3-medium-diffusers": {"steps": 30, "guidance_scale": 5.0},
 }
-IMAGE_MODEL_OPTION_NUMBERS = tuple(range(1, len(IMAGE_MODEL_PRESETS) + 1))
+IMAGE_MODEL_PRESET_NUMBERS = tuple(range(1, len(IMAGE_MODEL_PRESETS) + 1))
 FP32_PREFERRED_MODELS = {
     "Tongyi-MAI/Z-Image-Turbo",
     "RunDiffusion/Juggernaut-Z-Image",
@@ -117,9 +117,9 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Local Diffusers model used to generate the image. Default: {DEFAULT_IMAGE_MODEL}",
     )
     image_group.add_argument(
-        "--image-model-option",
+        "--image-model-preset",
         type=int,
-        choices=IMAGE_MODEL_OPTION_NUMBERS,
+        choices=IMAGE_MODEL_PRESET_NUMBERS,
         help="Select a numbered image-model preset. See the preset list in --help.",
     )
     parser.add_argument(
@@ -451,7 +451,7 @@ def default_multi_output_path(base_output: Path, index: int) -> Path:
 def main(args: argparse.Namespace) -> None:
     validate_dimensions(args.width, args.height)
 
-    image_model = resolve_model_choice(args.image_model, args.image_model_option, IMAGE_MODEL_PRESETS)
+    image_model = resolve_model_choice(args.image_model, args.image_model_preset, IMAGE_MODEL_PRESETS)
 
     # Use per-preset defaults if steps/guidance_scale are not set
     preset_defaults = IMAGE_MODEL_PRESET_DEFAULTS.get(image_model, {})

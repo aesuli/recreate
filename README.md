@@ -1,11 +1,14 @@
 # Recreate
 
-This project now uses a two-step local workflow:
+Recreate is a local image-reconstruction workflow built around two scripts:
 
-- `describe.py`: generate a reconstruction prompt from an input image.
-- `create.py`: generate an image from a prompt text file.
+- `describe.py`: generate a text prompt that describes an input image.
+- `create.py`: generate an image from a prompt file, stdin, or interactive input.
 
-Both scripts use local Hugging Face models.
+This software does not use an image-to-image process.
+The model generating the image only have the text as the reference to generate the image.
+
+Both steps run with local Hugging Face models and do not require a remote API.
 
 ## Setup
 
@@ -35,7 +38,7 @@ Default output prompt path:
 Example:
 
 ```bash
-python describe.py input.png --vision-model-option 2
+python describe.py input.png --vision-model-preset 2
 ```
 
 Useful options:
@@ -44,7 +47,7 @@ Useful options:
 - `--print` (print to stdout instead of saving a prompt file)
 - `--force`
 - `--vision-model MODEL`
-- `--vision-model-option {1,2,3}`
+- `--vision-model-preset {1,2,3,4}`
 - `--max-size INT` (default `512`)
 - `--device auto|cuda|mps|cpu`
 
@@ -75,7 +78,7 @@ Default output image path:
 Example:
 
 ```bash
-python create.py input_recreated.prompt.txt --image-model-option 1 --width 768 --height 512
+python create.py input_recreated.prompt.txt --image-model-preset 1 --width 768 --height 512
 ```
 
 Useful options:
@@ -86,14 +89,61 @@ Useful options:
 - `--ask`
 - `--ask-multi`
 - `--image-model MODEL`
-- `--image-model-option {1,2,3,4,5}`
+- `--image-model-preset {1,2,3,4,5}`
 - `--seed INT`
 - `--steps INT` (default `8`)
 - `--guidance-scale FLOAT` (default `6.0`)
 - `--width INT` and `--height INT` (must be multiples of `8`)
 - `--device auto|cuda|mps|cpu`
 
-## Notes
+Existing files are not overwritten unless `--force` is provided.
 
-- There is no img2img mode in this workflow.
-- Existing files are not overwritten unless `--force` is provided.
+## 3) Loop: continuous prompt -> image -> prompt cycle
+
+```bash
+python loop.py <directory> [options]
+```
+
+This script implements an infinite feedback loop:
+1. Reads `prompt_N.txt` files from the directory.
+2. Generates `image_N.png` from each prompt.
+3. Describes the generated image to create `prompt_(N+1).txt`.
+4. Repeats until stopped (Ctrl+C).
+
+Useful for exploring prompt evolution and image generation drift over multiple iterations.
+
+Useful options:
+
+- `--start-from INT` (default: `0`)
+- `--steps INT` (number of iterations before exiting; default: run indefinitely)
+- `--image-model MODEL` and `--image-model-preset {1,2,3,4,5}`
+- `--vision-model MODEL` and `--vision-model-preset {1,2,3,4}`
+- `--width INT` and `--height INT`
+- `--device auto|cuda|mps|cpu`
+
+## Model Presets
+
+Both `describe.py` and `create.py` support preset model options for quick access to alternative models.
+
+### Vision Models (image-to-prompt)
+
+Use `--vision-model-preset {1,2,3,4}` or `--vision-model MODEL`:
+
+1. `openbmb/MiniCPM-V-4.6` (default) - Image-text-to-text model. Good balance of speed and quality.
+2. `HuggingFaceTB/SmolVLM-256M-Instruct` - Smallest and fastest local VLM. Best for low-resource setups.
+3. `llava-hf/llava-1.5-7b-hf` - Stronger general-purpose 7B vision-language model. Better prompts than default.
+4. `Qwen/Qwen2.5-VL-7B-Instruct` - Largest and strongest option. Most detailed descriptions, highest memory requirement.
+
+### Image Models (text-to-image)
+
+Use `--image-model-preset {1,2,3,4,5}` or `--image-model MODEL`:
+
+1. `Tongyi-MAI/Z-Image-Turbo` (default) - Fastest Z-Image variant. Quick generation with reasonable quality.
+2. `RunDiffusion/Juggernaut-Z-Image` - Cinematic, sharp, and balanced. Good for realistic outputs.
+3. `stabilityai/sdxl-turbo` - Fastest SDXL option. Quick recreations, slightly lower quality than base SDXL.
+4. `stabilityai/stable-diffusion-xl-base-1.0` - Higher-quality SDXL base model. Better results, slower generation.
+5. `stabilityai/stable-diffusion-3-medium-diffusers` - Most capable preset. Best quality, heaviest resource usage.
+
+## License
+
+See [LICENSE](LICENSE).
