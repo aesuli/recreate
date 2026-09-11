@@ -10,7 +10,7 @@ from transformers import pipeline
 
 DEFAULT_VISION_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 DEFAULT_MAX_SIZE = 512
-DEFAULT_MAX_NEW_TOKENS = 1024
+DEFAULT_MAX_NEW_TOKENS = 2048
 DIMENSION_MULTIPLE = 8
 SUPPORTED_IMAGE_SUFFIXES = {
     ".jpg",
@@ -258,6 +258,13 @@ def load_vlm_pipeline(model_id: str, device: str, dtype: Any) -> Any:
             f"Underlying error: {last_error}"
         )
 
+    for generation_config in (
+        getattr(vlm, "generation_config", None),
+        getattr(vlm.model, "generation_config", None),
+    ):
+        if generation_config is not None:
+            generation_config.max_new_tokens = DEFAULT_MAX_NEW_TOKENS
+            generation_config.max_length = None
     return vlm
 
 
@@ -291,7 +298,6 @@ def generate_reconstruction_prompt(
         try:
             outputs = vlm(
                 text=messages,
-                max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
                 return_full_text=False,
                 clean_up_tokenization_spaces=False,
             )
@@ -304,14 +310,12 @@ def generate_reconstruction_prompt(
             outputs = vlm(
                 images=[image],
                 prompt=PROMPT_REQUEST,
-                max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
                 clean_up_tokenization_spaces=False,
             )
         except TypeError:
             outputs = vlm(
                 image,
                 prompt=PROMPT_REQUEST,
-                max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
                 clean_up_tokenization_spaces=False,
             )
 
